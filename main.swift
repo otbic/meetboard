@@ -265,6 +265,10 @@ func pickScreen() -> NSScreen {
     return NSScreen.main ?? screens[0]
 }
 
+// One board at a time (a login item and a manual launch can overlap).
+if let id = Bundle.main.bundleIdentifier,
+   NSRunningApplication.runningApplications(withBundleIdentifier: id).contains(where: { $0 != .current }) { exit(0) }
+
 let app = NSApplication.shared
 app.setActivationPolicy(.accessory)
 var screen = pickScreen()
