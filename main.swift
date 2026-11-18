@@ -2,7 +2,7 @@
 // Reads macOS Calendar (EventKit), so any account added in Internet Accounts shows up
 // (iCloud, Google, Exchange / Microsoft 365, CalDAV, ICS subscriptions).
 // Click the screen to join the next meeting's Teams / Zoom / Meet / Webex link.
-// Menu bar item: countdown, join, settings, show or hide the board, open at login, quit (same menu on right-click).
+// Menu bar item: countdown, join, settings, updates, show or hide the board, open at login, quit (same menu on right-click).
 //
 // Flags:
 //   --demo                       show sample meetings instead of your calendar
@@ -142,6 +142,7 @@ final class MenuBar: NSObject, NSMenuDelegate {
         let login = action("Open at Login", #selector(toggleLogin), key: ""); login.state = SMAppService.mainApp.status == .enabled ? .on : .off
         menu.addItem(login)
         menu.addItem(action("Settings...", #selector(settings), key: ","))
+        menu.addItem(action("Check for Updates...", #selector(checkUpdates), key: ""))
         menu.addItem(.separator())
         menu.addItem(withTitle: "Quit Meetboard", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
     }
@@ -153,6 +154,7 @@ final class MenuBar: NSObject, NSMenuDelegate {
     @objc func join() { if let u = board.joinTarget?.join { NSWorkspace.shared.open(u) } }
     @objc func toggleBoard() { UserDefaults.standard.set(!boardVisible(), forKey: showKey) }
     @objc func settings() { SettingsWindow.show() }
+    @objc func checkUpdates() { Updater.check(manual: true) }
     @objc func toggleLogin() {
         if SMAppService.mainApp.status == .enabled { try? SMAppService.mainApp.unregister() } else { try? SMAppService.mainApp.register() }
     }
@@ -205,6 +207,10 @@ NotificationCenter.default.addObserver(forName: UserDefaults.didChangeNotificati
     settingsPending = true
     DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { settingsPending = false; applyBoard(); refreshSources() }
 }
+
+// Updates: check GitHub once a day (Settings can turn this off).
+DispatchQueue.main.asyncAfter(deadline: .now() + 30) { Updater.checkIfDue() }
+Timer.scheduledTimer(withTimeInterval: 3600, repeats: true) { _ in Updater.checkIfDue() }
 
 // On air: poll camera and mic every 2 seconds.
 Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { _ in

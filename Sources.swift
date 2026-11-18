@@ -15,6 +15,7 @@ enum Prefs {
         "prayer": false, "prayerMethod": "isna", "asrHanafi": false,
         "family": false, "familyCalendar": "",
         "planes": false, "planeRadius": 5,
+        "autoUpdateCheck": true,
     ]
     // Used by --snapshot so screenshots never depend on the machine's own settings.
     static var overrides: [String: Any] = [:]
@@ -387,5 +388,90 @@ enum Clocks {
             }
             return (label, tz)
         }
+    }
+}
+
+// MARK: - Updates: compare this build's version with the latest GitHub release.
+
+enum Updater {
+    static let repo = "otbic/meetboard"
+    static var current: String { Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0" }
+    // The folder this copy was built from (written by build-app.sh), if it is still a git checkout.
+    static var sourceDir: String? {
+        guard let d = Bundle.main.infoDictionary?["MeetboardSourceDir"] as? String,
+              FileManager.default.fileExists(atPath: d + "/.git"), FileManager.default.fileExists(atPath: d + "/build-app.sh") else { return nil }
+        return d
+    }
+
+    static func isNewer(_ a: String, than b: String) -> Bool {
+        let x = a.split(separator: ".").map { Int($0) ?? 0 }, y = b.split(separator: ".").map { Int($0) ?? 0 }
+        for i in 0..<max(x.count, y.count) {
+            let p = i < x.count ? x[i] : 0, q = i < y.count ? y[i] : 0
+            if p != q { return p > q }
+        }
+        return false
+    }
+
+    struct Release { var version: String; var url: URL; var notes: String }
+
+    static func latest(_ done: @escaping (Release?) -> Void) {
+        var req = URLRequest(url: URL(string: "https://api.github.com/repos/\(repo)/releases/latest")!)
+        req.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
+        req.setValue("Meetboard", forHTTPHeaderField: "User-Agent")
+        URLSession.shared.dataTask(with: req) { data, resp, _ in
+            var r: Release?
+            if (resp as? HTTPURLResponse)?.statusCode == 200, let data,
+               let j = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+               let tag = j["tag_name"] as? String, let page = (j["html_url"] as? String).flatMap(URL.init(string:)) {
+                r = Release(version: tag.hasPrefix("v") ? String(tag.dropFirst()) : tag, url: page, notes: j["body"] as? String ?? "")
+            }
+            DispatchQueue.main.async { done(r) }
+        }.resume()
+    }
+
+    // manual: always answer (up to date, or could not check). Automatic: only speak up once per new version.
+    static func check(manual: Bool) {
+        UserDefaults.standard.set(Date(), forKey: "lastUpdateCheck")
+        latest { r in
+            guard let r else {
+                if manual { alert("Could not check for updates", "GitHub did not answer. Try again later.", ["OK"]) }
+                return
+            }
+            guard isNewer(r.version, than: current) else {
+                if manual { alert("Meetboard is up to date", "You have version \(current), the latest.", ["OK"]) }
+                return
+            }
+            if !manual, UserDefaults.standard.string(forKey: "notifiedVersion") == r.version { return }
+            UserDefaults.standard.set(r.version, forKey: "notifiedVersion")
+            let notes = r.notes.count > 600 ? String(r.notes.prefix(600)) + "..." : r.notes
+            let buttons = sourceDir != nil ? ["Update Now", "Release Notes", "Later"] : ["Release Notes", "Later"]
+            let pick = alert("Meetboard \(r.version) is available", "You have \(current).\n\n\(notes)", buttons)
+            if buttons[pick] == "Update Now" { updateNow() }
+            if buttons[pick] == "Release Notes" { NSWorkspace.shared.open(r.url) }
+        }
+    }
+
+    static func checkIfDue() {
+        guard Prefs.bool("autoUpdateCheck") else { return }
+        let last = UserDefaults.standard.object(forKey: "lastUpdateCheck") as? Date ?? .distantPast
+        if Date().timeIntervalSince(last) > 24 * 3600 { check(manual: false) }
+    }
+
+    // Opens Terminal on a small script: pull the latest source and rebuild, which reinstalls and relaunches Meetboard.
+    static func updateNow() {
+        guard let dir = sourceDir else { return }
+        let script = FileManager.default.temporaryDirectory.appendingPathComponent("meetboard-update.command")
+        let body = "#!/bin/zsh\ncd \(dir.replacingOccurrences(of: " ", with: "\\ ")) || exit 1\necho 'Updating Meetboard...'\ngit pull --ff-only && ./build-app.sh --install && echo 'Done. You can close this window.'\n"
+        try? body.write(to: script, atomically: true, encoding: .utf8)
+        try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: script.path)
+        NSWorkspace.shared.open(script)
+    }
+
+    @discardableResult
+    static func alert(_ title: String, _ text: String, _ buttons: [String]) -> Int {
+        let a = NSAlert(); a.messageText = title; a.informativeText = text
+        buttons.forEach { a.addButton(withTitle: $0) }
+        NSApp.activate(ignoringOtherApps: true)
+        return a.runModal().rawValue - NSApplication.ModalResponse.alertFirstButtonReturn.rawValue
     }
 }

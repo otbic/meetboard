@@ -18,17 +18,21 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>CFBundleExecutable</key><string>meetboard</string>
   <key>CFBundleIconFile</key><string>AppIcon</string>
   <key>CFBundlePackageType</key><string>APPL</string>
-  <key>CFBundleShortVersionString</key><string>0.4.0</string>
-  <key>CFBundleVersion</key><string>4</string>
+  <key>CFBundleShortVersionString</key><string>0.5.0</string>
+  <key>CFBundleVersion</key><string>5</string>
   <key>LSMinimumSystemVersion</key><string>14.0</string>
   <key>LSUIElement</key><true/>
+  <key>MeetboardSourceDir</key><string>$PWD</string>
   <key>NSHighResolutionCapable</key><true/>
   <key>NSLocationUsageDescription</key><string>Meetboard shows the local weather next to the clock. Your location is rounded to about 1 km.</string>
   <key>NSLocationWhenInUseUsageDescription</key><string>Meetboard shows the local weather next to the clock. Your location is rounded to about 1 km.</string>
   <key>NSCalendarsFullAccessUsageDescription</key><string>Meetboard shows your next meeting and a countdown on a spare display.</string>
 </dict></plist>
 PLIST
-codesign --force --sign "${MEETBOARD_SIGN:--}" "$APP"
+# Remember a signing identity once given, so Update Now (which runs this script without it) keeps it.
+if [[ -n "${MEETBOARD_SIGN:-}" ]]; then print -r -- "$MEETBOARD_SIGN" > .sign-identity; fi
+SIGN="${MEETBOARD_SIGN:-$( [[ -f .sign-identity ]] && cat .sign-identity || echo - )}"
+codesign --force --sign "$SIGN" "$APP"
 echo "Built: $PWD/$APP"
 if [[ "${1:-}" == "--install" ]]; then
   pkill -x meetboard || true

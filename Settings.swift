@@ -28,6 +28,7 @@ struct SettingsView: View {
     @AppStorage("familyCalendar") var familyCal = ""
     @AppStorage("planes") var planesOn = false
     @AppStorage("planeRadius") var radius = 5
+    @AppStorage("autoUpdateCheck") var autoUpdate = true
 
     let screens = NSScreen.screens.map(\.localizedName)
     let calendars = calendarNames()
@@ -92,6 +93,14 @@ struct SettingsView: View {
             } header: { Text("Extras") } footer: {
                 Text("Weather, prayer times and planes use your location rounded to about 1 km. Planes from adsb.lol, weather from Open-Meteo.")
                     .font(.caption).foregroundStyle(.secondary)
+            }
+            Section("Updates") {
+                Toggle("Check GitHub for updates once a day", isOn: $autoUpdate)
+                HStack {
+                    Text("Version \(Updater.current)").foregroundStyle(.secondary)
+                    Spacer()
+                    Button("Check Now") { Updater.check(manual: true) }
+                }
             }
         }
         .formStyle(.grouped)

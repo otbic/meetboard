@@ -52,6 +52,8 @@ This builds `Meetboard.app` (ad-hoc signed; if you have a signing certificate, `
 
 Calendars come from macOS Calendar. To add work accounts: System Settings > Internet Accounts, add the account and turn on Calendars only. If your organisation blocks that, subscribe to the calendar's published ICS link in the Calendar app instead.
 
+Updates: Meetboard checks this repo's latest release once a day (turn it off in Settings), and the menu has Check for Updates. Update Now opens Terminal and runs `git pull` and `./build-app.sh --install` in the folder you built from.
+
 Quit: menu bar icon (or right-click the board), Quit Meetboard.
 
 ## Try it without your calendar
