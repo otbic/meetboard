@@ -1,5 +1,6 @@
 #!/bin/zsh
-# Builds build/Meetboard.app (ad-hoc signed). --install copies it to /Applications and relaunches it.
+# Builds build/Meetboard.app. Ad-hoc signed unless MEETBOARD_SIGN names a signing identity (e.g. "Apple Development");
+# a real identity keeps calendar and location permission across rebuilds. --install copies it to /Applications and relaunches it.
 set -euo pipefail
 cd "$(dirname "$0")"
 APP="build/Meetboard.app"
@@ -17,15 +18,17 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>CFBundleExecutable</key><string>meetboard</string>
   <key>CFBundleIconFile</key><string>AppIcon</string>
   <key>CFBundlePackageType</key><string>APPL</string>
-  <key>CFBundleShortVersionString</key><string>0.2.0</string>
-  <key>CFBundleVersion</key><string>2</string>
+  <key>CFBundleShortVersionString</key><string>0.3.0</string>
+  <key>CFBundleVersion</key><string>3</string>
   <key>LSMinimumSystemVersion</key><string>14.0</string>
   <key>LSUIElement</key><true/>
   <key>NSHighResolutionCapable</key><true/>
+  <key>NSLocationUsageDescription</key><string>Meetboard shows the local weather next to the clock. Your location is rounded to about 1 km.</string>
+  <key>NSLocationWhenInUseUsageDescription</key><string>Meetboard shows the local weather next to the clock. Your location is rounded to about 1 km.</string>
   <key>NSCalendarsFullAccessUsageDescription</key><string>Meetboard shows your next meeting and a countdown on a spare display.</string>
 </dict></plist>
 PLIST
-codesign --force --sign - "$APP"
+codesign --force --sign "${MEETBOARD_SIGN:--}" "$APP"
 echo "Built: $PWD/$APP"
 if [[ "${1:-}" == "--install" ]]; then
   pkill -x meetboard || true

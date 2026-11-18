@@ -2,7 +2,7 @@
 // Reads macOS Calendar (EventKit), so any account added in Internet Accounts shows up
 // (iCloud, Google, Exchange / Microsoft 365, CalDAV, ICS subscriptions).
 // Click the screen to join the next meeting's Teams / Zoom / Meet / Webex link.
-// Right-click for the menu (Quit).
+// Menu bar item: countdown, join, show or hide the board, open at login, quit (same menu on right-click).
 //
 // Flags:
 //   --demo                       show sample meetings instead of your calendar
@@ -11,6 +11,7 @@
 import AppKit
 import EventKit
 import ServiceManagement
+import CoreLocation
 
 let store = EKEventStore()
 let args = CommandLine.arguments
@@ -91,6 +92,77 @@ let dim = NSColor(srgbRed: 0.55, green: 0.58, blue: 0.66, alpha: 1)
 let soft = NSColor(srgbRed: 0.82, green: 0.84, blue: 0.90, alpha: 1)
 let green = NSColor(srgbRed: 0.35, green: 0.85, blue: 0.55, alpha: 1)
 
+// MARK: - Weather (Open-Meteo: free, no key). Location from `defaults write com.otbic.meetboard location "43.65,-79.38"`,
+// else Location Services, rounded to about 1 km before it is sent. No location, no weather; the board works without it.
+
+final class Weather: NSObject, CLLocationManagerDelegate {
+    struct Now { var symbol: String; var temp: Int }
+    var now: Now?
+    var onChange: () -> Void = {}
+    private let lm = CLLocationManager()
+    private var coord: (Double, Double)?
+
+    func start() {
+        if let s = UserDefaults.standard.string(forKey: "location") {
+            let p = s.split(separator: ",").compactMap { Double($0.trimmingCharacters(in: .whitespaces)) }
+            if p.count == 2 { coord = (p[0], p[1]) }
+        }
+        if coord == nil {
+            lm.delegate = self
+            lm.desiredAccuracy = kCLLocationAccuracyKilometer
+            lm.requestWhenInUseAuthorization()
+            lm.requestLocation()
+        }
+        refresh()
+        Timer.scheduledTimer(withTimeInterval: 15 * 60, repeats: true) { [weak self] _ in self?.refresh() }
+    }
+
+    func locationManager(_ m: CLLocationManager, didUpdateLocations locs: [CLLocation]) {
+        guard let c = locs.last?.coordinate else { return }
+        coord = (c.latitude, c.longitude); refresh()
+    }
+    func locationManager(_ m: CLLocationManager, didFailWithError error: Error) {}
+    func locationManagerDidChangeAuthorization(_ m: CLLocationManager) {
+        if m.authorizationStatus == .authorizedAlways || m.authorizationStatus == .authorized { m.requestLocation() }
+    }
+
+    func refresh() {
+        guard let (lat, lon) = coord else { return }
+        let unit = Locale.current.measurementSystem == .us ? "fahrenheit" : "celsius"
+        let url = URL(string: String(format: "https://api.open-meteo.com/v1/forecast?latitude=%.2f&longitude=%.2f&current=temperature_2m,weather_code,is_day&temperature_unit=%@", lat, lon, unit))!
+        URLSession.shared.dataTask(with: url) { [weak self] data, _, _ in
+            guard let data, let j = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let cur = j["current"] as? [String: Any],
+                  let t = cur["temperature_2m"] as? Double, let code = cur["weather_code"] as? Int else { return }
+            let day = (cur["is_day"] as? Int ?? 1) == 1
+            DispatchQueue.main.async { self?.now = Now(symbol: weatherSymbol(code, day: day), temp: Int(t.rounded())); self?.onChange() }
+        }.resume()
+    }
+}
+
+// WMO weather codes to SF Symbols.
+func weatherSymbol(_ code: Int, day: Bool) -> String {
+    switch code {
+    case 0: return day ? "sun.max.fill" : "moon.stars.fill"
+    case 1, 2: return day ? "cloud.sun.fill" : "cloud.moon.fill"
+    case 3: return "cloud.fill"
+    case 45, 48: return "cloud.fog.fill"
+    case 51...57: return "cloud.drizzle.fill"
+    case 65, 82: return "cloud.heavyrain.fill"
+    case 61...67, 80, 81: return "cloud.rain.fill"
+    case 71...77, 85, 86: return "cloud.snow.fill"
+    case 95...99: return "cloud.bolt.rain.fill"
+    default: return "cloud.fill"
+    }
+}
+
+func weatherImage(_ name: String, size: CGFloat) -> NSImage? {
+    let cfg = NSImage.SymbolConfiguration(pointSize: size, weight: .regular).applying(.preferringMulticolor())
+    return NSImage(systemSymbolName: name, accessibilityDescription: nil)?.withSymbolConfiguration(cfg)
+}
+
+let weather = Weather()
+
 // The layout is designed at 960x640 and scaled to fit any display.
 let designW: CGFloat = 960, designH: CGFloat = 640
 
@@ -111,11 +183,14 @@ final class Board: NSView {
     var current: Meeting? { meetings.first { $0.start <= now && $0.end > now } }
     var next: Meeting? { meetings.first { $0.start > now } }
 
-    override func mouseDown(with event: NSEvent) {
-        // Join the next meeting if it starts within 10 minutes, else the current one.
+    // The meeting a click joins: the next one if it starts within 10 minutes, else the current one.
+    var joinTarget: Meeting? {
         let n = next, c = current
-        let target = (n != nil && n!.start.timeIntervalSince(now) < 600) ? n : (c ?? n)
-        if let u = target?.join { NSWorkspace.shared.open(u) }
+        return (n != nil && n!.start.timeIntervalSince(now) < 600) ? n : (c ?? n)
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        if let u = joinTarget?.join { NSWorkspace.shared.open(u) }
     }
 
     func fmt(_ secs: Int) -> String {
@@ -161,8 +236,13 @@ final class Board: NSView {
         let tf = DateFormatter(); tf.dateFormat = "h:mm a"
         let df = DateFormatter(); df.dateFormat = "EEEE, d MMMM"
 
-        text(tf.string(from: now), pad, 20, size: 30, weight: .semibold, width: 300, mono: true)
+        let tw = text(tf.string(from: now), pad, 20, size: 30, weight: .semibold, width: 300, mono: true)
         text(df.string(from: now), W - pad - 420, 27, size: 21, color: dim, width: 420, right: true)
+        if let w = weather.now, let img = weatherImage(w.symbol, size: 24) {
+            let x = pad + tw + 22
+            img.draw(in: NSRect(x: x, y: 25, width: img.size.width, height: img.size.height))
+            text("\(w.temp)°", x + img.size.width + 8, 24, size: 24, weight: .medium, color: soft, width: 120, mono: true)
+        }
 
         if !status.isEmpty {
             text(status, pad, H / 2 - 20, size: 30, color: dim, width: W - 2 * pad)
@@ -238,6 +318,7 @@ if let out = arg("--snapshot") {
     // A fixed weekday morning so the screenshot is the same every time.
     board.fixedNow = Calendar.current.date(from: DateComponents(year: 2026, month: 11, day: 17, hour: 9, minute: 52, second: 18))
     board.demoScene = arg("--scene") ?? "next"
+    weather.now = Weather.Now(symbol: "cloud.sun.fill", temp: 4)
     board.reload()
     let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: Int(w * 2), pixelsHigh: Int(h * 2), bitsPerSample: 8,
                                samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB,
@@ -245,7 +326,9 @@ if let out = arg("--snapshot") {
     rep.size = NSSize(width: w, height: h)
     NSGraphicsContext.saveGraphicsState()
     NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
-    board.displayIgnoringOpacity(board.bounds, in: NSGraphicsContext.current!)
+    NSAppearance(named: .darkAqua)!.performAsCurrentDrawingAppearance {
+        board.displayIgnoringOpacity(board.bounds, in: NSGraphicsContext.current!)
+    }
     NSGraphicsContext.restoreGraphicsState()
     try! rep.representation(using: .png, properties: [:])!.write(to: URL(fileURLWithPath: out))
     print("Wrote \(out)")
@@ -274,16 +357,83 @@ app.setActivationPolicy(.accessory)
 var screen = pickScreen()
 let win = NSWindow(contentRect: screen.frame, styleMask: .borderless, backing: .buffered, defer: false, screen: screen)
 win.setFrame(screen.frame, display: true)
+win.appearance = NSAppearance(named: .darkAqua)
 win.collectionBehavior = [.canJoinAllSpaces, .stationary]
 win.level = NSWindow.Level(rawValue: NSWindow.Level.mainMenu.rawValue + 1)
 let board = Board(frame: NSRect(origin: .zero, size: screen.frame.size))
-let menu = NSMenu()
-menu.addItem(withTitle: "Quit Meetboard", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
-board.menu = menu
 win.contentView = board
-win.orderFrontRegardless()
 
-// Start at login once, when running from /Applications. Turn off in System Settings > General > Login Items.
+// Show the board unless it was hidden from the menu. With one display it starts hidden; the menu bar item still works.
+let showKey = "showBoard"
+func boardVisible() -> Bool {
+    UserDefaults.standard.object(forKey: showKey) as? Bool ?? (NSScreen.screens.count > 1)
+}
+func applyBoardVisibility() { boardVisible() ? win.orderFrontRegardless() : win.orderOut(nil) }
+
+// MARK: - Menu bar item: countdown to the next meeting, and the app's menu.
+
+final class MenuBar: NSObject, NSMenuDelegate {
+    let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+    let menu = NSMenu()
+
+    override init() {
+        super.init()
+        let img = NSImage(systemSymbolName: "calendar.badge.clock", accessibilityDescription: "Meetboard")
+        img?.isTemplate = true
+        item.button?.image = img
+        item.button?.imagePosition = .imageLeading
+        menu.delegate = self
+        item.menu = menu
+        board.menu = menu
+        tick()
+    }
+
+    // "7m", "1h 20m"; orange under 10 minutes, red under 2. Nothing when the next meeting is over 12 hours away.
+    func tick() {
+        guard let b = item.button else { return }
+        guard let n = board.next else { b.attributedTitle = NSAttributedString(string: ""); return }
+        let secs = Int(n.start.timeIntervalSince(board.now))
+        guard secs < 12 * 3600 else { b.attributedTitle = NSAttributedString(string: ""); return }
+        let m = (secs + 59) / 60
+        let s = m >= 60 ? "\(m / 60)h \(m % 60)m" : "\(m)m"
+        var attrs: [NSAttributedString.Key: Any] = [.font: NSFont.monospacedDigitSystemFont(ofSize: 13, weight: .medium)]
+        if secs <= 120 { attrs[.foregroundColor] = NSColor.systemRed } else if secs <= 600 { attrs[.foregroundColor] = NSColor.systemOrange }
+        b.attributedTitle = NSAttributedString(string: " " + s, attributes: attrs)
+    }
+
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        menu.removeAllItems()
+        let tf = DateFormatter(); tf.dateFormat = "h:mm a"
+        if let c = board.current { menu.addItem(info("Now: \(c.title), until \(tf.string(from: c.end))")) }
+        if let n = board.next { menu.addItem(info("Next: \(n.title), \(tf.string(from: n.start))")) }
+        if board.current == nil && board.next == nil { menu.addItem(info(board.status.isEmpty ? "No meetings" : board.status)) }
+        if let t = board.joinTarget, t.join != nil {
+            menu.addItem(action("Join \(t.title)", #selector(join), key: "j"))
+        }
+        menu.addItem(.separator())
+        let show = action("Show Board", #selector(toggleBoard), key: "b"); show.state = boardVisible() ? .on : .off
+        menu.addItem(show)
+        let login = action("Open at Login", #selector(toggleLogin), key: ""); login.state = SMAppService.mainApp.status == .enabled ? .on : .off
+        menu.addItem(login)
+        menu.addItem(.separator())
+        menu.addItem(withTitle: "Quit Meetboard", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+    }
+
+    func info(_ s: String) -> NSMenuItem { let i = NSMenuItem(title: s, action: nil, keyEquivalent: ""); i.isEnabled = false; return i }
+    func action(_ s: String, _ sel: Selector, key: String) -> NSMenuItem {
+        let i = NSMenuItem(title: s, action: sel, keyEquivalent: key); i.target = self; return i
+    }
+    @objc func join() { if let u = board.joinTarget?.join { NSWorkspace.shared.open(u) } }
+    @objc func toggleBoard() { UserDefaults.standard.set(!boardVisible(), forKey: showKey); applyBoardVisibility() }
+    @objc func toggleLogin() {
+        if SMAppService.mainApp.status == .enabled { try? SMAppService.mainApp.unregister() } else { try? SMAppService.mainApp.register() }
+    }
+}
+
+let menuBar = MenuBar()
+applyBoardVisibility()
+
+// Start at login once, when running from /Applications. Change it later from the menu bar item.
 let loginKey = "loginItemSetOnce"
 if Bundle.main.bundlePath.hasPrefix("/Applications/"), !UserDefaults.standard.bool(forKey: loginKey) {
     if (try? SMAppService.mainApp.register()) != nil { UserDefaults.standard.set(true, forKey: loginKey) }
@@ -291,18 +441,23 @@ if Bundle.main.bundlePath.hasPrefix("/Applications/"), !UserDefaults.standard.bo
 
 if args.contains("--demo") {
     board.demoScene = "next"
+    weather.now = Weather.Now(symbol: "cloud.sun.fill", temp: 4)
     board.reload()
 } else {
     store.requestFullAccessToEvents { ok, _ in
         DispatchQueue.main.async {
             if ok { board.reload() } else { board.status = "Allow calendars: System Settings > Privacy > Calendars"; board.needsDisplay = true }
+            menuBar.tick()
         }
     }
     NotificationCenter.default.addObserver(forName: .EKEventStoreChanged, object: store, queue: .main) { _ in board.reload() }
     Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { _ in board.reload() }
+    weather.onChange = { board.needsDisplay = true }
+    weather.start()
 }
-Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { _ in board.needsDisplay = true }
+Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { _ in board.needsDisplay = true; menuBar.tick() }
 NotificationCenter.default.addObserver(forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main) { _ in
     screen = pickScreen(); win.setFrame(screen.frame, display: true); board.frame = NSRect(origin: .zero, size: screen.frame.size)
+    applyBoardVisibility()
 }
 app.run()
